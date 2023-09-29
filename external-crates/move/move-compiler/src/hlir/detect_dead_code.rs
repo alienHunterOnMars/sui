@@ -4,7 +4,7 @@
 use crate::{
     diag,
     expansion::ast::ModuleIdent,
-    naming::ast as N,
+    naming::ast::{self as N, Var},
     parser::ast::BinOp_,
     shared::{unique_map::UniqueMap, *},
     typing::ast as T,
@@ -23,7 +23,7 @@ enum ControlFlow_ {
     AbortCalled,
     Divergent,
     InfiniteLoop,
-    LoopControlCalled,
+    NamedBlockControlCalled(Var), // tracks the loop
     ReturnCalled,
     UnreachableCode,
 }
@@ -42,7 +42,7 @@ impl<'env> Context<'env> {
     fn report_value_error(&mut self, sp!(site, error): ControlFlow) {
         use ControlFlow_::*;
         match error {
-            AbortCalled | Divergent | InfiniteLoop | LoopControlCalled | ReturnCalled => {
+            AbortCalled | Divergent | InfiniteLoop | NamedBlockControlCalled(_) | ReturnCalled => {
                 self.env
                     .add_diag(diag!(UnusedItem::DeadCode, (site, DIVERGENT_EXP)));
             }
@@ -87,8 +87,12 @@ impl<'env> Context<'env> {
     fn report_statement_tail_error(&mut self, sp!(site, error): ControlFlow, tail_exp: &T::Exp) {
         use ControlFlow_::*;
         match error {
-            AlreadyReported | AbortCalled | Divergent | InfiniteLoop | ReturnCalled
-            | LoopControlCalled
+            AlreadyReported
+            | AbortCalled
+            | Divergent
+            | InfiniteLoop
+            | ReturnCalled
+            | NamedBlockControlCalled(_)
                 if matches!(tail_exp.exp.value, T::UnannotatedExp_::Unit { .. }) =>
             {
                 self.env.add_diag(diag!(
@@ -98,7 +102,7 @@ impl<'env> Context<'env> {
                     (tail_exp.exp.loc, INFO_MSG),
                 ));
             }
-            AbortCalled | Divergent | InfiniteLoop | ReturnCalled | LoopControlCalled => {
+            AbortCalled | Divergent | InfiniteLoop | ReturnCalled | NamedBlockControlCalled(_) => {
                 self.env.add_diag(diag!(
                     UnusedItem::DeadCode,
                     (tail_exp.exp.loc, DEAD_ERR_CMD)
@@ -125,8 +129,11 @@ const INFO_MSG: &str =
     "A trailing ';' in an expression block implicitly adds a '()' value after the semicolon. \
      That '()' value will not be reachable";
 
-fn is_loop_divergent(cf: Option<ControlFlow>) -> bool {
-    matches!(cf, Some(sp!(_, ControlFlow_::LoopControlCalled)))
+fn exits_named_block(name: Var, cf: Option<ControlFlow>) -> bool {
+    match cf {
+        Some(sp!(_, ControlFlow_::NamedBlockControlCalled(break_name))) => name == break_name,
+        _ => false,
+    }
 }
 
 fn already_reported(loc: Loc) -> Option<ControlFlow> {
@@ -146,8 +153,8 @@ fn infinite_loop(loc: Loc) -> Option<ControlFlow> {
     Some(sp(loc, ControlFlow_::InfiniteLoop))
 }
 
-fn loop_control_called(loc: Loc) -> Option<ControlFlow> {
-    Some(sp(loc, ControlFlow_::LoopControlCalled))
+fn named_control_called(loop_name: Var, loc: Loc) -> Option<ControlFlow> {
+    Some(sp(loc, ControlFlow_::NamedBlockControlCalled(loop_name)))
 }
 
 fn return_called(loc: Loc) -> Option<ControlFlow> {
@@ -290,7 +297,7 @@ fn tail(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
             }
         }
         // Whiles and loops Loops are currently moved to statement position
-        E::While(_, _) | E::Loop { .. } => statement(context, e),
+        E::While(_, _, _) | E::Loop { .. } => statement(context, e),
         E::Block(seq) => tail_block(context, seq),
 
         // -----------------------------------------------------------------------------------------
@@ -298,7 +305,7 @@ fn tail(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
         // -----------------------------------------------------------------------------------------
         E::Return(_) => return_called(*eloc),
         E::Abort(_) => abort_called(*eloc),
-        E::Break | E::Continue => loop_control_called(*eloc),
+        E::Give(name, _) | E::Continue(name) => named_control_called(*name, *eloc),
         E::Assign(_, _, _) | E::Mutate(_, _) => None,
 
         // -----------------------------------------------------------------------------------------
@@ -372,7 +379,7 @@ fn value(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
                 _ => None,
             }
         }
-        E::While(_, _) | E::Loop { .. } => statement(context, e),
+        E::While(..) | E::Loop { .. } => statement(context, e),
         E::Block(seq) => value_block(context, seq),
 
         // -----------------------------------------------------------------------------------------
@@ -464,7 +471,7 @@ fn value(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
         // -----------------------------------------------------------------------------------------
         E::Return(_) => return_called(*eloc),
         E::Abort(_) => abort_called(*eloc),
-        E::Break | E::Continue => loop_control_called(*eloc),
+        E::Give(name, _) | E::Continue(name) => named_control_called(*name, *eloc),
         E::Assign(_, _, _) | E::Mutate(_, _) => None, // These are unit-valued
 
         // -----------------------------------------------------------------------------------------
@@ -550,7 +557,7 @@ fn statement(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
             }
         }
 
-        E::While(test, body) => {
+        E::While(_, test, body) => {
             if let Some(test_control_flow) = value(context, test) {
                 context.report_value_error(test_control_flow);
                 statement(context, body);
@@ -562,11 +569,15 @@ fn statement(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
             }
         }
 
-        E::Loop { body, has_break } => {
+        E::Loop {
+            name,
+            body,
+            has_break,
+        } => {
             let body_result = statement(context, body);
             if !has_break {
                 infinite_loop(*eloc)
-            } else if is_loop_divergent(body_result) || *has_break {
+            } else if exits_named_block(*name, body_result) || *has_break {
                 // if the loop has a break, only Godel knows if it'll call it
                 None
             } else {
@@ -586,7 +597,7 @@ fn statement(context: &mut Context, e: &T::Exp) -> Option<ControlFlow> {
             }
             abort_called(*eloc)
         }
-        E::Break | E::Continue => loop_control_called(*eloc),
+        E::Give(name, _) | E::Continue(name) => named_control_called(*name, *eloc),
 
         // -----------------------------------------------------------------------------------------
         //  statements with effects

@@ -60,6 +60,7 @@ impl Query {
             .data_unchecked::<PgManager>()
             .fetch_owner(address)
             .await?;
+
         Ok(owner_address.map(|o| ObjectOwner::Address(Address { address: o })))
     }
 
@@ -163,12 +164,33 @@ impl Query {
             )?;
         }
 
-        let result = ctx
-            .data_unchecked::<PgManager>()
+        ctx.data_unchecked::<PgManager>()
             .fetch_txs(first, after, last, before, filter)
-            .await?;
+            .await
+            .extend()
+    }
 
-        Ok(Some(result))
+    async fn object_connection(
+        &self,
+        ctx: &Context<'_>,
+        first: Option<u64>,
+        after: Option<String>,
+        last: Option<u64>,
+        before: Option<String>,
+        filter: Option<ObjectFilter>,
+    ) -> Result<Option<Connection<String, Object>>> {
+        if let Some(filter) = &filter {
+            validate_package_dependencies(
+                filter.package.as_ref(),
+                filter.module.as_ref(),
+                filter.ty.as_ref(),
+            )?;
+        }
+
+        ctx.data_unchecked::<PgManager>()
+            .fetch_objs(first, after, last, before, filter)
+            .await
+            .extend()
     }
 
     async fn protocol_config(

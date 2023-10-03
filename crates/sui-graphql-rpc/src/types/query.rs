@@ -60,7 +60,6 @@ impl Query {
             .data_unchecked::<PgManager>()
             .fetch_owner(address)
             .await?;
-
         Ok(owner_address.map(|o| ObjectOwner::Address(Address { address: o })))
     }
 
@@ -141,9 +140,32 @@ impl Query {
         last: Option<u64>,
         before: Option<String>,
     ) -> Result<Option<Connection<String, Checkpoint>>> {
+        ctx.data_unchecked::<PgManager>()
+            .fetch_checkpoints(first, after, last, before)
+            .await
+            .extend()
+    }
+
+    async fn transaction_block_connection(
+        &self,
+        ctx: &Context<'_>,
+        first: Option<u64>,
+        after: Option<String>,
+        last: Option<u64>,
+        before: Option<String>,
+        filter: Option<TransactionBlockFilter>,
+    ) -> Result<Option<Connection<String, TransactionBlock>>> {
+        if let Some(filter) = &filter {
+            validate_package_dependencies(
+                filter.package.as_ref(),
+                filter.module.as_ref(),
+                filter.function.as_ref(),
+            )?;
+        }
+
         let result = ctx
-            .data_provider()
-            .fetch_checkpoint_connection(first, after, last, before)
+            .data_unchecked::<PgManager>()
+            .fetch_txs(first, after, last, before, filter)
             .await?;
 
         Ok(Some(result))

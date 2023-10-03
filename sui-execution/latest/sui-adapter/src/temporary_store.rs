@@ -13,7 +13,10 @@ use sui_protocol_config::ProtocolConfig;
 use sui_types::base_types::VersionDigest;
 use sui_types::committee::EpochId;
 use sui_types::digests::ObjectDigest;
-use sui_types::effects::{TransactionEffects, TransactionEvents};
+use sui_types::effects::{
+    EffectsAuxDataEntry, EffectsAuxDataInMemory, EffectsAuxDataInStorage, TransactionEffects,
+    TransactionEvents,
+};
 use sui_types::execution::{DynamicallyLoadedObjectMetadata, ExecutionResults, ExecutionResultsV2};
 use sui_types::execution_status::ExecutionStatus;
 use sui_types::inner_temporary_store::InnerTemporaryStore;
@@ -103,6 +106,7 @@ impl<'backing> TemporaryStore<'backing> {
 
     /// Break up the structure and return its internal stores (objects, active_inputs, written, deleted)
     pub fn into_inner(self) -> InnerTemporaryStore {
+        let aux_data = self.generate_aux_data();
         let results = self.execution_results;
         InnerTemporaryStore {
             input_objects: self.input_objects,
@@ -111,6 +115,7 @@ impl<'backing> TemporaryStore<'backing> {
             events: TransactionEvents {
                 data: results.user_events,
             },
+            aux_data,
             max_binary_format_version: self.protocol_config.move_binary_format_version(),
             loaded_runtime_objects: self.loaded_runtime_objects,
             no_extraneous_module_bytes: self.protocol_config.no_extraneous_module_bytes(),
@@ -334,6 +339,8 @@ impl<'backing> TemporaryStore<'backing> {
 
         let lamport_version = self.lamport_timestamp;
         let inner = self.into_inner();
+        // TODO: Use it when we are ready.
+        let _aux_data_digest = inner.aux_data.as_ref().map(|d| d.digest());
 
         let effects = TransactionEffects::new_from_execution_v2(
             status,
@@ -350,10 +357,40 @@ impl<'backing> TemporaryStore<'backing> {
             } else {
                 Some(inner.events.digest())
             },
+            None,
             transaction_dependencies.into_iter().collect(),
         );
 
         (inner, effects)
+    }
+
+    fn generate_aux_data(&self) -> Option<EffectsAuxDataInStorage> {
+        let mut aux_data_entries = vec![];
+        let read_only_runtime_objects: Vec<_> = self
+            .loaded_runtime_objects
+            .iter()
+            .filter_map(|(id, metadata)| {
+                if !self.execution_results.modified_objects.contains(id) {
+                    Some((*id, metadata.version, metadata.digest))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !read_only_runtime_objects.is_empty() {
+            aux_data_entries.push(EffectsAuxDataEntry::ReadOnlyRuntimeObjects(
+                read_only_runtime_objects,
+            ));
+        }
+        if aux_data_entries.is_empty() {
+            None
+        } else {
+            Some(
+                EffectsAuxDataInMemory::new(self.tx_digest, aux_data_entries)
+                    .serialize()
+                    .unwrap(),
+            )
+        }
     }
 
     /// An internal check of the invariants (will only fire in debug)

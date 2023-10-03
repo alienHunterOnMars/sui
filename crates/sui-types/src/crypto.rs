@@ -1434,6 +1434,7 @@ mod bcs_signable {
 
     impl BcsSignable for crate::effects::TransactionEffects {}
     impl BcsSignable for crate::effects::TransactionEvents {}
+    impl BcsSignable for crate::effects::EffectsAuxDataInStorage {}
     impl BcsSignable for crate::transaction::TransactionData {}
     impl BcsSignable for crate::transaction::SenderSignedData {}
     impl BcsSignable for crate::object::Object {}

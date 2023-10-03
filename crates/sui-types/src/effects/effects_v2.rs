@@ -7,7 +7,7 @@ use crate::base_types::{
     EpochId, ObjectDigest, ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest,
     VersionDigest,
 };
-use crate::digests::{Digest, TransactionEventsDigest};
+use crate::digests::{EffectsAuxDataDigest, TransactionEventsDigest};
 use crate::effects::{InputSharedObjectKind, TransactionEffectsAPI};
 use crate::execution_status::ExecutionStatus;
 use crate::gas::GasCostSummary;
@@ -51,7 +51,7 @@ pub struct TransactionEffectsV2 {
     /// Auxiliary data that are not protocol-critical, generated as part of the effects but are stored separately.
     /// Storing it separately allows us to avoid bloating the effects with data that are not critical.
     /// It also provides more flexibility on the format and type of the data.
-    aux_data_digest: Option<Digest>,
+    aux_data_digest: Option<EffectsAuxDataDigest>,
 }
 
 impl TransactionEffectsAPI for TransactionEffectsV2 {
@@ -255,6 +255,10 @@ impl TransactionEffectsAPI for TransactionEffectsV2 {
         self.events_digest.as_ref()
     }
 
+    fn aux_data_digest(&self) -> Option<&EffectsAuxDataDigest> {
+        self.aux_data_digest.as_ref()
+    }
+
     fn dependencies(&self) -> &[TransactionDigest] {
         &self.dependencies
     }
@@ -340,6 +344,7 @@ impl TransactionEffectsV2 {
         changed_objects: BTreeMap<ObjectID, EffectsObjectChange>,
         gas_object: Option<ObjectID>,
         events_digest: Option<TransactionEventsDigest>,
+        aux_data_digest: Option<EffectsAuxDataDigest>,
         dependencies: Vec<TransactionDigest>,
     ) -> Self {
         let unchanged_shared_objects = shared_objects
@@ -372,7 +377,7 @@ impl TransactionEffectsV2 {
             gas_object_index,
             events_digest,
             dependencies,
-            aux_data_digest: None,
+            aux_data_digest,
         };
         #[cfg(debug_assertions)]
         result.check_invariant();

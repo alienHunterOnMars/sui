@@ -136,7 +136,7 @@ pub enum ExecutionStatus {
     Failure,
 }
 
-#[derive(InputObject)]
+#[derive(InputObject, Default)]
 pub(crate) struct TransactionBlockFilter {
     pub package: Option<SuiAddress>,
     pub module: Option<String>,

@@ -3,8 +3,16 @@
 
 use crate::context_data::db_data_provider::PgManager;
 
-use super::{base64::Base64, end_of_epoch_data::EndOfEpochData, epoch::Epoch, gas::GasCostSummary};
-use async_graphql::*;
+use super::{
+    base64::Base64,
+    date_time::DateTime,
+    end_of_epoch_data::EndOfEpochData,
+    epoch::Epoch,
+    gas::GasCostSummary,
+    query::validate_package_dependencies,
+    transaction_block::{TransactionBlock, TransactionBlockFilter},
+};
+use async_graphql::{connection::Connection, *};
 
 #[derive(InputObject)]
 pub(crate) struct CheckpointId {
@@ -18,7 +26,7 @@ pub(crate) struct Checkpoint {
     // id: ID1,
     pub digest: String,
     pub sequence_number: u64,
-    // timestamp: DateTime,
+    pub timestamp: Option<DateTime>,
     pub validator_signature: Option<Base64>,
     pub previous_checkpoint_digest: Option<String>,
     pub live_object_set_digest: Option<String>,
@@ -41,5 +49,32 @@ impl Checkpoint {
             .extend()?;
 
         Ok(Some(epoch))
+    }
+
+    async fn transaction_block_connection(
+        &self,
+        ctx: &Context<'_>,
+        first: Option<u64>,
+        after: Option<String>,
+        last: Option<u64>,
+        before: Option<String>,
+        filter: Option<TransactionBlockFilter>,
+    ) -> Result<Option<Connection<String, TransactionBlock>>> {
+        if let Some(filter) = &filter {
+            validate_package_dependencies(
+                filter.package.as_ref(),
+                filter.module.as_ref(),
+                filter.function.as_ref(),
+            )?;
+        }
+
+        // update filter with checkpoint sequence number
+        let mut filter = filter;
+        filter.get_or_insert_with(Default::default).checkpoint = Some(self.sequence_number);
+
+        ctx.data_unchecked::<PgManager>()
+            .fetch_txs(first, after, last, before, filter)
+            .await
+            .extend()
     }
 }

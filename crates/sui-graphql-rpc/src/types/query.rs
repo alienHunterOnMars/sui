@@ -7,11 +7,11 @@ use super::{
     address::Address,
     checkpoint::{Checkpoint, CheckpointId},
     epoch::Epoch,
-    object::Object,
+    object::{Object, ObjectFilter},
     owner::ObjectOwner,
     protocol_config::ProtocolConfigs,
     sui_address::SuiAddress,
-    transaction_block::TransactionBlock,
+    transaction_block::{TransactionBlock, TransactionBlockFilter},
 };
 use crate::{
     config::ServiceConfig,
@@ -202,4 +202,19 @@ impl Query {
             .fetch_protocol_config(protocol_version)
             .await
     }
+}
+
+pub(crate) fn validate_package_dependencies(
+    package: Option<&SuiAddress>,
+    module: Option<&String>,
+    function: Option<&String>,
+) -> Result<()> {
+    if function.is_some() {
+        if package.is_none() || module.is_none() {
+            return Err(Error::RequiresPackageAndModule.extend());
+        }
+    } else if module.is_some() && package.is_none() {
+        return Err(Error::RequiresPackage.extend());
+    }
+    Ok(())
 }

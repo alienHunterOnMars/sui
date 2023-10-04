@@ -11,7 +11,7 @@ use crate::{
         digest::Digest,
         epoch::Epoch,
         gas::{GasCostSummary, GasInput},
-        object::{Object, ObjectKind, ObjectFilter},
+        object::{Object, ObjectFilter, ObjectKind},
         sui_address::SuiAddress,
         transaction_block::{TransactionBlock, TransactionBlockEffects, TransactionBlockFilter},
     },
@@ -28,7 +28,7 @@ use sui_indexer::{
         checkpoints::StoredCheckpoint, epoch::StoredEpochInfo, objects::StoredObject,
         transactions::StoredTransaction,
     },
-    schema_v2::{checkpoints, epochs, objects, transactions},
+    schema_v2::{checkpoints, epochs, objects, transactions, tx_indices},
     PgConnectionPoolConfig,
 };
 use sui_json_rpc_types::SuiTransactionBlockEffects;
@@ -339,12 +339,32 @@ impl PgManager {
                 Ok((stored_objs, has_next_page))
             })
             .transpose()
-        }
     }
-    
+}
+
 /// Implement methods to be used by graphql resolvers
 impl PgManager {
-    // methods for graphql resolvers
+    pub(crate) fn parse_tx_cursor(&self, cursor: &str) -> Result<i64, Error> {
+        let tx_sequence_number = cursor
+            .parse::<i64>()
+            .map_err(|_| Error::Internal("Invalid transaction cursor".to_string()))?;
+        Ok(tx_sequence_number)
+    }
+
+    pub(crate) fn parse_obj_cursor(&self, cursor: &str) -> Result<i64, Error> {
+        let checkpoint_sequence_number = cursor
+            .parse::<i64>()
+            .map_err(|_| Error::Internal("Invalid object cursor".to_string()))?;
+        Ok(checkpoint_sequence_number)
+    }
+
+    pub(crate) fn parse_checkpoint_cursor(&self, cursor: &str) -> Result<i64, Error> {
+        let sequence_number = cursor
+            .parse::<i64>()
+            .map_err(|_| Error::Internal("Invalid checkpoint cursor".to_string()))?;
+        Ok(sequence_number)
+    }
+
     pub(crate) async fn fetch_tx(&self, digest: &str) -> Result<Option<TransactionBlock>, Error> {
         let digest = Digest::from_str(digest)?.into_vec();
 

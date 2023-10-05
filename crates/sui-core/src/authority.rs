@@ -104,7 +104,7 @@ use sui_types::messages_grpc::{
     HandleTransactionResponse, ObjectInfoRequest, ObjectInfoRequestKind, ObjectInfoResponse,
     TransactionInfoRequest, TransactionInfoResponse, TransactionStatus,
 };
-use sui_types::metrics::{BytecodeVerifierMetrics, LimitsMetrics};
+use sui_types::metrics::{BytecodeVerifierMetrics, LimitsMetrics, SignatureMetrics};
 use sui_types::object::{MoveObject, Owner, PastObjectRead, OBJECT_START_VERSION};
 use sui_types::storage::{ObjectKey, ObjectStore, WriteKind};
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemStateTrait;
@@ -244,6 +244,8 @@ pub struct AuthorityMetrics {
     pub bytecode_verifier_metrics: Arc<BytecodeVerifierMetrics>,
 
     pub authenticator_state_update_failed: IntCounter,
+
+    pub signature_metrics: Arc<SignatureMetrics>,
 }
 
 // Override default Prom buckets for positive numbers in 0-50k range
@@ -562,6 +564,7 @@ impl AuthorityMetrics {
                 registry,
             )
             .unwrap(),
+            signature_metrics: Arc::new(SignatureMetrics::new(registry)),
         }
     }
 }
@@ -3459,6 +3462,13 @@ impl AuthorityState {
         self.metrics
             .pending_notify_read
             .set(self.database.executed_effects_notify_read.num_pending() as i64);
+
+        // count signature by scheme, for zklogin and multisig
+        if certificate.has_zklogin_sig() {
+            self.metrics.signature_metrics.zklogin_sig_count.inc();
+        } else if certificate.has_upgraded_multisig() {
+            self.metrics.signature_metrics.multisig_sig_count.inc();
+        }
 
         Ok(())
     }

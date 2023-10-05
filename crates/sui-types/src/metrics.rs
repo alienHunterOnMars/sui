@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use prometheus::{
-    register_histogram_with_registry, register_int_counter_vec_with_registry, Histogram,
-    IntCounterVec,
+    register_histogram_with_registry, register_int_counter_vec_with_registry,
+    register_int_counter_with_registry, Histogram, IntCounter, IntCounterVec,
 };
 
 pub struct LimitsMetrics {
@@ -133,6 +133,32 @@ impl BytecodeVerifierMetrics {
                 Self::LATENCY_SEC_BUCKETS.to_vec(),
                 registry
             ).unwrap(),
+        }
+    }
+}
+
+pub struct SignatureMetrics {
+    /// Count of zklogin signatures
+    pub zklogin_sig_count: IntCounter,
+    /// Count of multisig signatures
+    pub multisig_sig_count: IntCounter,
+}
+
+impl SignatureMetrics {
+    pub fn new(registry: &prometheus::Registry) -> Self {
+        Self {
+            zklogin_sig_count: register_int_counter_with_registry!(
+                "zklogin_sig_count",
+                "Count of zkLogin signatures",
+                registry,
+            )
+            .unwrap(),
+            multisig_sig_count: register_int_counter_with_registry!(
+                "multisig_sig_count",
+                "Count of zkLogin signatures",
+                registry,
+            )
+            .unwrap(),
         }
     }
 }

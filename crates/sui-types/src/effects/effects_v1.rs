@@ -125,6 +125,7 @@ impl TransactionEffectsAPI for TransactionEffectsV1 {
     fn modified_at_versions(&self) -> Vec<(ObjectID, SequenceNumber)> {
         self.modified_at_versions.clone()
     }
+
     fn input_shared_objects(&self) -> Vec<(ObjectRef, InputSharedObjectKind)> {
         let modified: HashSet<_> = self.modified_at_versions.iter().map(|(r, _)| r).collect();
         self.shared_objects

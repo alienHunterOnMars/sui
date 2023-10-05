@@ -143,6 +143,9 @@ pub enum RunSpec {
         // relative weight of adversarial transactions in the benchmark workload
         #[clap(long, default_value = "0")]
         adversarial: u32,
+        // relative weight of adversarial transactions in the benchmark workload
+        #[clap(long, default_value = "0")]
+        shared_deletion: u32,
 
         // --- workload-specific options --- (TODO: use subcommands or similar)
         // 100 for max hotness i.e all requests target

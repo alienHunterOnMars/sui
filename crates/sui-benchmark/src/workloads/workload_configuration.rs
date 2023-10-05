@@ -14,6 +14,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use super::adversarial::{AdversarialPayloadCfg, AdversarialWorkloadBuilder};
+use super::shared_object_deletion::SharedCounterDeletionWorkloadBuilder;
 
 pub struct WorkloadConfiguration;
 
@@ -29,6 +30,7 @@ impl WorkloadConfiguration {
                 num_workers,
                 in_flight_ratio,
                 shared_counter,
+                shared_deletion,
                 transfer_object,
                 delegation,
                 batch_payment,
@@ -46,6 +48,7 @@ impl WorkloadConfiguration {
                     transfer_object,
                     delegation,
                     batch_payment,
+                    shared_deletion,
                     adversarial,
                     AdversarialPayloadCfg::from_str(&adversarial_cfg).unwrap(),
                     batch_payment_size,
@@ -69,6 +72,7 @@ impl WorkloadConfiguration {
         transfer_object_weight: u32,
         delegation_weight: u32,
         batch_payment_weight: u32,
+        shared_deletion_weight: u32,
         adversarial_weight: u32,
         adversarial_cfg: AdversarialPayloadCfg,
         batch_payment_size: u32,
@@ -97,6 +101,16 @@ impl WorkloadConfiguration {
             reference_gas_price,
         );
         workload_builders.push(shared_workload);
+        let shared_deletion_workload = SharedCounterDeletionWorkloadBuilder::from(
+            shared_deletion_weight as f32 / total_weight as f32,
+            target_qps,
+            num_workers,
+            in_flight_ratio,
+            shared_counter_hotness_factor,
+            shared_counter_max_tip,
+            reference_gas_price,
+        );
+        workload_builders.push(shared_deletion_workload);
         let transfer_workload = TransferObjectWorkloadBuilder::from(
             transfer_object_weight as f32 / total_weight as f32,
             target_qps,

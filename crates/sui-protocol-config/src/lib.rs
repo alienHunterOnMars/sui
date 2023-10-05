@@ -1520,7 +1520,10 @@ impl ProtocolConfig {
                     cfg.check_zklogin_id_cost_base = Some(200);
                     // zklogin::check_zklogin_issuer
                     cfg.check_zklogin_issuer_cost_base = Some(200);
-                    cfg.feature_flags.shared_object_deletion = true;
+                    // Only allow shared object deletion on devnet
+                    if chain != Chain::Mainnet && chain != Chain::Testnet {
+                        cfg.feature_flags.shared_object_deletion = true;
+                    }
                 }
                 // Use this template when making changes:
                 //

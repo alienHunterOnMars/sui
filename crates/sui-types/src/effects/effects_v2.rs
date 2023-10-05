@@ -64,6 +64,10 @@ impl TransactionEffectsAPI for TransactionEffectsV2 {
         self.executed_epoch
     }
 
+    fn lamport_version(&self) -> SequenceNumber {
+        self.lamport_version
+    }
+
     // TODO: Add a new API to return modified object refs.
     fn modified_at_versions(&self) -> Vec<(ObjectID, SequenceNumber)> {
         self.changed_objects

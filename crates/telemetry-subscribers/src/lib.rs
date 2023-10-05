@@ -135,6 +135,8 @@ pub struct TelemetryConfig {
     /// Log sampling rate
     pub sample_nth: Option<usize>,
     pub target_prefix: Option<String>,
+    /// Enable logging gas stats to file by prefixing log lines with the following string
+    pub gas_stats_filter_prefix: Option<String>,
 }
 
 #[must_use]
@@ -222,6 +224,7 @@ impl TelemetryConfig {
             prom_registry: None,
             sample_nth: None,
             target_prefix: None,
+            gas_stats_filter_prefix: None,
         }
     }
 
@@ -257,6 +260,11 @@ impl TelemetryConfig {
 
     pub fn with_target_prefix(mut self, prefix: &str) -> Self {
         self.target_prefix = Some(prefix.to_owned());
+        self
+    }
+
+    pub fn with_gas_stats_enabled(mut self, prefix: &str) -> Self {
+        self.gas_stats_filter_prefix = Some(prefix.to_owned());
         self
     }
 
@@ -308,7 +316,6 @@ impl TelemetryConfig {
 
         // Separate span level filter.
         // This is a dumb filter for now - allows all spans that are below a given level.
-        // TODO: implement a sampling filter
         let span_level = config.span_level.unwrap_or(Level::INFO);
         let span_filter = filter::filter_fn(move |metadata| {
             metadata.is_span() && *metadata.level() <= span_level
@@ -353,9 +360,25 @@ impl TelemetryConfig {
 
         if config.sample_nth.is_some() {
             let sample_nth = config.sample_nth.unwrap();
-            let sampling_layer = SamplingFilter::new(sample_nth, config.target_prefix);
+            let sampling_layer = SamplingFilter::new(sample_nth, config.target_prefix.clone());
             layers.push(sampling_layer.boxed());
         }
+
+        let gas_stats_filter_prefix = config.gas_stats_filter_prefix.clone();
+        let gas_filter = filter::filter_fn(move |metadata| {
+            if let Some(ref prefix) = gas_stats_filter_prefix {
+                return metadata.target().starts_with(prefix);
+            }
+            false
+        });
+
+        let (gas_output, gas_guard) = get_output(config.log_file);
+        let gas_stats_layer = fmt::layer()
+            .with_writer(gas_output)
+            .with_filter(gas_filter)
+            .boxed();
+
+        layers.push(gas_stats_layer.boxed());
 
         let subscriber = tracing_subscriber::registry().with(layers);
         ::tracing::subscriber::set_global_default(subscriber)
@@ -367,7 +390,13 @@ impl TelemetryConfig {
 
         // The guard must be returned and kept in the main fn of the app, as when it's dropped then the output
         // gets flushed and closed. If this is dropped too early then no output will appear!
-        let guards = TelemetryGuards { worker_guard };
+        let mut guards = TelemetryGuards { worker_guard };
+        if config.gas_stats_filter_prefix.is_some() {
+            // if the gas stats filtering is enabled the provided file will only be used to record gas stats
+            guards = TelemetryGuards {
+                worker_guard: gas_guard,
+            }
+        }
 
         (guards, filter_handle)
     }

@@ -641,14 +641,6 @@ No. Proof generation is only required when ephemeral KeyPair expires. Since the 
 
 zkLogin is a Sui native primitive and not a feature of a particular application or wallet. It can be used by any Sui developer, including on mobile.
 
-## Can I run my own ZK Proving Service?
-
-Yes, you can choose to run the server binary on premise and generate ZK proofs yourself instead of calling a provider. Please contact us for more instructions.
-
-## What RPC providers support the ZK Proving Service?
-
-The application can currently call the Mysten Labs-maintained ZK Proving Service. Please reach out to whitelist the application's registered client ID to use the service.
-
 ## Is account recovery possible if the user loses the OAuth credentials?
 
 Yes, the user can follow the OAuth providers' recovery flow. The ephemeral private key can be refreshed and after completing a new OAuth login flow, the user can obtain new ZK proof and sign transactions with the refreshed key.

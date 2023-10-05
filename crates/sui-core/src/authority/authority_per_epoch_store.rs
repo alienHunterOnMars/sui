@@ -11,7 +11,8 @@ use parking_lot::RwLock;
 use parking_lot::{Mutex, RwLockReadGuard, RwLockWriteGuard};
 use rocksdb::Options;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::iter;
 use std::path::{Path, PathBuf};
@@ -40,7 +41,7 @@ use crate::authority::epoch_start_configuration::{EpochFlag, EpochStartConfigura
 use crate::authority::{AuthorityStore, ResolverWrapper};
 use crate::checkpoints::{
     BuilderCheckpointSummary, CheckpointCommitHeight, CheckpointServiceNotify, EpochStats,
-    PendingCheckpoint,
+    PendingCheckpoint, PendingCheckpointInfo,
 };
 use crate::consensus_handler::{
     SequencedConsensusTransaction, SequencedConsensusTransactionKey,
@@ -49,12 +50,14 @@ use crate::consensus_handler::{
 use crate::epoch::epoch_metrics::EpochMetrics;
 use crate::epoch::reconfiguration::ReconfigState;
 use crate::module_cache_metrics::ResolverMetrics;
+use crate::post_consensus_tx_reorder::PostConsensusTxReorder;
 use crate::signature_verifier::*;
 use crate::stake_aggregator::{GenericMultiStakeAggregator, StakeAggregator};
 use move_bytecode_utils::module_cache::SyncModuleCache;
 use mysten_common::sync::notify_once::NotifyOnce;
 use mysten_common::sync::notify_read::NotifyRead;
 use mysten_metrics::monitored_scope;
+use narwhal_types::{Round, TimestampMs};
 use prometheus::IntCounter;
 use std::str::FromStr;
 use sui_execution::{self, Executor};
@@ -1732,64 +1735,101 @@ impl AuthorityPerEpochStore {
         C: CheckpointServiceNotify,
     >(
         self: &'a Arc<Self>,
-        transactions: &[VerifiedSequencedConsensusTransaction],
-        end_of_publish_transactions: Vec<VerifiedSequencedConsensusTransaction>,
+        transactions: Vec<SequencedConsensusTransaction>,
         checkpoint_service: &Arc<C>,
         object_store: impl ObjectStore,
-    ) -> SuiResult<(
-        Vec<VerifiedExecutableTransaction>,
-        ConsensusCommitBatch<'a, C>,
-    )> {
+        commit_round: Round,
+        commit_timestamp: TimestampMs,
+        skipped_consensus_txns: &IntCounter,
+    ) -> SuiResult<Vec<VerifiedExecutableTransaction>> {
+        let verified_transactions: Vec<_> = transactions
+            .into_iter()
+            .filter_map(|transaction| {
+                self.verify_consensus_transaction(transaction, skipped_consensus_txns)
+                    .ok()
+            })
+            .collect();
+        let roots: BTreeSet<_> = verified_transactions
+            .iter()
+            .filter_map(|transaction| transaction.0.transaction.executable_transaction_digest())
+            .collect();
+        let (end_of_publish_transactions, mut sequenced_transactions): (Vec<_>, Vec<_>) =
+            verified_transactions
+                .into_iter()
+                .partition(|transaction| transaction.0.is_end_of_publish());
+
+        PostConsensusTxReorder::reorder(
+            &mut sequenced_transactions,
+            self.protocol_config.consensus_transaction_ordering(),
+        );
+
         let mut batch = self.db_batch();
         let (transactions_to_schedule, notifications, lock_and_final_round) = self
             .process_consensus_transactions(
                 &mut batch,
-                transactions,
+                &sequenced_transactions,
                 &end_of_publish_transactions,
                 checkpoint_service,
                 object_store,
             )
             .await?;
 
-        Ok((
-            transactions_to_schedule,
-            ConsensusCommitBatch {
-                epoch_store: self.clone(),
-                checkpoint_service: checkpoint_service.clone(),
-                batch,
-                notifications,
-                end_of_publish_transactions,
-                lock_and_final_round,
+        // The last block in this function notifies about new checkpoint if needed
+        let final_checkpoint_round = lock_and_final_round.map(|(_, r)| r);
+        let final_checkpoint = match final_checkpoint_round.map(|r| r.cmp(&commit_round)) {
+            Some(Ordering::Less) => {
+                debug!(
+                    "Not forming checkpoint for round {} above final checkpoint round {:?}",
+                    commit_round, final_checkpoint_round
+                );
+                return Ok(vec![]);
+            }
+            Some(Ordering::Equal) => true,
+            Some(Ordering::Greater) => false,
+            None => false,
+        };
+        let pending_checkpoint = PendingCheckpoint {
+            roots: roots.into_iter().collect(),
+            details: PendingCheckpointInfo {
+                timestamp_ms: commit_timestamp,
+                last_of_epoch: final_checkpoint,
+                commit_height: commit_round,
             },
-        ))
+        };
+
+        self.write_pending_checkpoint(&mut batch, &pending_checkpoint)?;
+
+        batch.write()?;
+
+        self.process_notifications(&notifications, &end_of_publish_transactions);
+
+        checkpoint_service.notify_checkpoint(&pending_checkpoint)?;
+
+        if final_checkpoint {
+            info!(epoch=?self.epoch(), "Received 2f+1 EndOfPublish messages, notifying last checkpoint");
+            self.record_end_of_message_quorum_time_metric();
+        }
+
+        Ok(transactions_to_schedule)
     }
 
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn process_consensus_transactions_for_tests<C: CheckpointServiceNotify>(
-        &self,
-        transactions: Vec<VerifiedSequencedConsensusTransaction>,
+        self: &Arc<Self>,
+        transactions: Vec<SequencedConsensusTransaction>,
         checkpoint_service: &Arc<C>,
         object_store: impl ObjectStore,
+        skipped_consensus_txns: &IntCounter,
     ) -> SuiResult<Vec<VerifiedExecutableTransaction>> {
-        let mut batch = self.db_batch();
-
-        let (transactions, end_of_publish_transactions): (Vec<_>, Vec<_>) = transactions
-            .into_iter()
-            .partition(|txn| !txn.0.is_end_of_publish());
-
-        let (certs, notifications, _lock) = self
-            .process_consensus_transactions(
-                &mut batch,
-                &transactions,
-                &end_of_publish_transactions,
-                checkpoint_service,
-                object_store,
-            )
-            .await?;
-        batch.write()?;
-
-        self.process_notifications(&notifications, &end_of_publish_transactions);
-        Ok(certs)
+        self.process_consensus_transactions_and_commit_boundary(
+            transactions,
+            checkpoint_service,
+            object_store,
+            0,
+            0,
+            skipped_consensus_txns,
+        )
+        .await
     }
 
     fn process_notifications(
@@ -2410,36 +2450,6 @@ impl AuthorityPerEpochStore {
             let ActiveJwk { jwk_id, jwk, .. } = active_jwk;
             self.signature_verifier.insert_jwk(jwk_id, jwk);
         }
-    }
-}
-
-pub(crate) struct ConsensusCommitBatch<'a, C> {
-    epoch_store: Arc<AuthorityPerEpochStore>,
-    checkpoint_service: Arc<C>,
-    batch: DBBatch,
-    notifications: Vec<SequencedConsensusTransactionKey>,
-    end_of_publish_transactions: Vec<VerifiedSequencedConsensusTransaction>,
-    lock_and_final_round: Option<(parking_lot::RwLockWriteGuard<'a, ReconfigState>, u64)>,
-}
-
-impl<'a, C: CheckpointServiceNotify> ConsensusCommitBatch<'a, C> {
-    pub fn commit(mut self, pending_checkpoint: PendingCheckpoint) -> SuiResult {
-        self.epoch_store
-            .write_pending_checkpoint(&mut self.batch, &pending_checkpoint)?;
-
-        self.batch.write()?;
-
-        self.epoch_store
-            .process_notifications(&self.notifications, &self.end_of_publish_transactions);
-
-        self.checkpoint_service
-            .notify_checkpoint(&pending_checkpoint)
-    }
-
-    pub fn final_checkpoint_round(&self) -> Option<u64> {
-        self.lock_and_final_round
-            .as_ref()
-            .map(|(_, final_round)| *final_round)
     }
 }
 

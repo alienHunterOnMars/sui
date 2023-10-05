@@ -354,7 +354,6 @@ impl<T: ObjectStore + Send + Sync, C: CheckpointServiceNotify + Send + Sync> Exe
                 &self.object_store,
                 round,
                 timestamp,
-                &self.metrics.skipped_consensus_txns,
             )
             .await
             .expect("Unrecoverable error in consensus handler");

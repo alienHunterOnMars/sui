@@ -1633,28 +1633,12 @@ impl AuthorityPerEpochStore {
         }
     }
 
-    /// Verifies transaction signatures and other data
-    /// Important: This function can potentially be called in parallel and you can not rely on order of transactions to perform verification
-    /// If this function return an error, transaction is skipped and is not passed to handle_consensus_transaction
-    /// This function returns unit error and is responsible for emitting log messages for internal errors
-    pub(crate) fn verify_consensus_transaction(
+    /// Verifies system consensus transactions are valid.
+    /// We already verified user transactions in batch verifier.
+    fn verify_consensus_transaction(
         &self,
         transaction: SequencedConsensusTransaction,
-        skipped_consensus_txns: &IntCounter,
     ) -> Result<VerifiedSequencedConsensusTransaction, ()> {
-        let _scope = monitored_scope("VerifyConsensusTransaction");
-        if self
-            .is_consensus_message_processed(&transaction.transaction.key())
-            .expect("Storage error")
-        {
-            debug!(
-                consensus_index=?transaction.consensus_index.index.transaction_index,
-                tracking_id=?transaction.transaction.get_tracking_id(),
-                "handle_consensus_transaction UserTransaction [skip]",
-            );
-            skipped_consensus_txns.inc();
-            return Err(());
-        }
         // Signatures are verified as part of narwhal payload verification in SuiTxValidator
         match &transaction.transaction {
             SequencedConsensusTransactionKind::External(ConsensusTransaction {
@@ -1731,23 +1715,18 @@ impl AuthorityPerEpochStore {
     }
 
     pub(crate) async fn process_consensus_transactions_and_commit_boundary<
-        'a,
         C: CheckpointServiceNotify,
     >(
-        self: &'a Arc<Self>,
+        self: &Arc<Self>,
         transactions: Vec<SequencedConsensusTransaction>,
         checkpoint_service: &Arc<C>,
         object_store: impl ObjectStore,
         commit_round: Round,
         commit_timestamp: TimestampMs,
-        skipped_consensus_txns: &IntCounter,
     ) -> SuiResult<Vec<VerifiedExecutableTransaction>> {
         let verified_transactions: Vec<_> = transactions
             .into_iter()
-            .filter_map(|transaction| {
-                self.verify_consensus_transaction(transaction, skipped_consensus_txns)
-                    .ok()
-            })
+            .filter_map(|transaction| self.verify_consensus_transaction(transaction).ok())
             .collect();
         let roots: BTreeSet<_> = verified_transactions
             .iter()
@@ -1819,7 +1798,6 @@ impl AuthorityPerEpochStore {
         transactions: Vec<SequencedConsensusTransaction>,
         checkpoint_service: &Arc<C>,
         object_store: impl ObjectStore,
-        skipped_consensus_txns: &IntCounter,
     ) -> SuiResult<Vec<VerifiedExecutableTransaction>> {
         self.process_consensus_transactions_and_commit_boundary(
             transactions,
@@ -1827,7 +1805,6 @@ impl AuthorityPerEpochStore {
             object_store,
             0,
             0,
-            skipped_consensus_txns,
         )
         .await
     }

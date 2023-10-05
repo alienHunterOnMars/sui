@@ -314,7 +314,6 @@ pub async fn send_consensus(authority: &AuthorityState, cert: &VerifiedCertifica
             vec![transaction],
             &Arc::new(CheckpointServiceNoop {}),
             authority.db(),
-            &authority.metrics.skipped_consensus_txns,
         )
         .await
         .unwrap();
@@ -338,7 +337,6 @@ pub async fn send_consensus_no_execution(authority: &AuthorityState, cert: &Veri
             vec![transaction],
             &Arc::new(CheckpointServiceNoop {}),
             &authority.db(),
-            &authority.metrics.skipped_consensus_txns,
         )
         .await
         .unwrap();

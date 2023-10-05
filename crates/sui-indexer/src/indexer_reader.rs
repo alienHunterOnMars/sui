@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 use crate::models_v2::checkpoints::StoredCheckpoint;
+use crate::models_v2::transactions::{event_bytes_to_transcation_block_events, StoredEventBytes, event_bytes_to_sui_event};
 use crate::{
     errors::IndexerError,
     models_v2::{epoch::StoredEpochInfo, objects::ObjectRefColumn, packages::StoredPackage},
@@ -21,12 +22,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, RwLock},
 };
-use sui_json_rpc_types::{CheckpointId, EpochInfo, SuiTransactionBlockResponse, TransactionFilter};
+use sui_json_rpc_types::{CheckpointId, EpochInfo, SuiTransactionBlockResponse, TransactionFilter, EventFilter, SuiTransactionBlockEvents};
 use sui_types::{
     base_types::{ObjectID, ObjectRef, SequenceNumber, SuiAddress, VersionNumber},
     committee::EpochId,
     digests::{ObjectDigest, TransactionDigest},
     dynamic_field::DynamicFieldInfo,
+    event::EventID,
     move_package::MovePackage,
     object::{Object, ObjectRead},
     sui_system_state::{sui_system_state_summary::SuiSystemStateSummary, SuiSystemStateTrait},
@@ -34,6 +36,10 @@ use sui_types::{
 
 pub const TX_SEQUENCE_NUMBER_STR: &str = "tx_sequence_number";
 pub const TRANSACTION_DIGEST_STR: &str = "transaction_digest";
+pub const TIMESTAMP_STR: &str = "timestamp";
+pub const EVENTS_STR: &str = "events";
+
+pub const LARGER_THAN_MAX_EVENT_LIMIT: usize = u16::MAX as usize;
 
 #[derive(Clone)]
 pub struct IndexerReader {
@@ -494,6 +500,140 @@ impl IndexerReader {
         })
         .await
     }
+
+    fn query_events_by_tx_digest(
+        &self,
+        tx_digest: TransactionDigest,
+        cursor: Option<EventID>,
+        limit: usize,
+        descending_order: bool,
+    ) -> IndexerResult<SuiEvent> {
+
+        let cursor_event_seq = if let Some(cursor) = cursor {
+            if cursor.tx_digest != tx_digest {
+                return Err(IndexerError::InvalidArgumentError("Cursor tx_digest does not match the tx_digest in the query.".into()));
+            }
+            Some(cursor.event_seq)
+        } else {
+            None
+        };
+        // desc, no cursor
+        // events[array_length(events, 1) - limit + 1: array_length(events, 1)]
+        // desc, cursor 
+        // events[cursor - limit + 1: cursor]
+
+        // asc, no cursor
+        // events[1: limit]
+        // asc, cursor 
+        // events[cursor: cursor + limit - 1]
+
+        // Note 1. Postgresql array index starts from 1
+        // Note 2. Postgresql array slice is inclusive on both ends
+        let limit = limit as u64;
+        let event_slice_str = match (descending_order, cursor_event_seq) {
+            (true, None) => {
+                format!("{EVENTS_STR}[array_length({EVENTS_STR}, 1) - {} + 1: array_length({EVENTS_STR}, 1)]", limit)
+            }
+            (true, Some(cursor_event_seq)) => {
+                format!("{EVENTS_STR}[{}: {}]", cursor_event_seq - limit  + 1, cursor_event_seq)
+            }
+            (false, None) => {
+                format!("{EVENTS_STR}[1: {}]", limit)
+            } 
+            (false, Some(cursor_event_seq)) => {
+                format!("{EVENTS_STR}[{}: {}]", cursor_event_seq, cursor_event_seq + limit - 1)
+            }
+        };
+
+        let query = format!(
+            "SELECT {event_slice_str}, {TIMESTAMP_STR} FROM transactions WHERE transaction_digest = '\\x{}'::bytea",
+            Hex::encode(tx_digest.clone().into_inner().to_vec()),
+        );
+        // let stored_event_bytes: Vec<StoredEventBytes> = self
+        // let stored_event_bytes: Vec<(Vec<Option<Vec<u8>>>, i64)> = self
+        //     .run_query(|conn| 
+        //         diesel::sql_query(query.clone())
+        //         // .bind::<diesel::sql_types::Array<diesel::sql_types::Bytea>, _>(()) // binds the bytea[] type
+        //         // .bind::<diesel::sql_types::BigInt, _>(())      // binds the BigInt type/
+        //         // .load::<(Vec<Option<Vec<u8>>>, i64)>(conn)
+        //         .load(conn)
+        // )?;
+        let stored_event_bytes: Vec<StoredEventBytes> = self
+            .run_query(|conn| 
+                diesel::sql_query(query.clone()).load(conn)
+            )?;
+
+
+        if stored_event_bytes.is_empty() {
+            return Ok(vec![]);
+        }
+        // Safe to unwrap: check emptiness above
+        let timestamp = stored_event_bytes.first().unwrap().timestamp_ms as u64;
+        event_bytes_to_sui_event(
+            tx_digest, 
+            stored_event_bytes.into_iter().map(|e| e.events).collect(),
+            timestamp, 
+            self,
+        )
+    }
+
+    fn query_events_impl(
+        &self,
+        filter: EventFilter,
+        cursor: Option<EventID>,
+        limit: usize,
+        descending_order: bool,
+    ) -> IndexerResult<Vec<SuiEvent>> {
+        if let EventFilter::Transaction(tx_digest) = filter {
+            return query_events_by_tx_digest(tx_digest, cursor, limit, descending_order);
+        }
+
+        let cursor = if let Some(cursor) = cursor {
+            let EventID {
+                tx_digest,
+                event_seq,
+            } = cursor;
+            Some((self.run_query(|conn| {
+                transactions::dsl::transactions
+                    .select(transactions::tx_sequence_number)
+                    .filter(transactions::dsl::transaction_digest.eq(tx_digest.into_inner().to_vec()))
+                    .first::<i64>(conn)
+            })?, event_seq))
+        } else {
+            None
+        };
+
+
+        let query = match filter {
+            // FIXME special handling
+            EventFilter::Sender(address) => {
+                // events::dsl::events.filter(events::dsl::senders.eq_any(address.to_vec()))
+            }
+            // FIXME special handling
+            EventFilter::Transaction(tx_digest) => {
+                // events::dsl::events.filter(events::dsl::senders.eq_any(address.to_vec()))
+            }
+            EventFilter::Package(package_id) => {
+                events::dsl::package.filter(events::dsl::package.eq(package_id.to_vec()))
+            }
+            EventFilter::MoveModule{package, module} => {
+                events::dsl::package.filter(events::dsl::package.eq(package_id.to_vec()))
+                .filter(events::dsl::module.eq(module.to_string()))
+            }
+            EventFilter::MoveEventType(struct_tag) => {
+                events::dsl::event_type.filter(events::dsl::event_type.eq(struct_tag.to_string()))
+            }
+            EventFilter::MoveEventModule{package, module} => {
+                events::dsl::event_type.filter(events::dsl::event_type.like(format!("{}::{}::%", package.to_hex_literal(), module.to_string())))
+            }
+            EventFilter::All(_) | EventFilter::Any(_) | EventFilter::And(_, _) | EventFilter::Or(_, _) | EventFilter::TimeRange { .. } => {
+                return Err(IndexerError::NotSupportedError(
+                    "This type of EventFilter is not supported.".into(),
+                ));
+            }
+        };
+    }
+
 
     fn query_transaction_blocks_impl(
         &self,

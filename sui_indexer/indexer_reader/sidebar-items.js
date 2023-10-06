@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["TRANSACTION_DIGEST_STR","TX_SEQUENCE_NUMBER_STR"],"struct":["IndexerReader"]};

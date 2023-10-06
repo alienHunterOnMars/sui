@@ -58,7 +58,6 @@ use mysten_common::sync::notify_once::NotifyOnce;
 use mysten_common::sync::notify_read::NotifyRead;
 use mysten_metrics::monitored_scope;
 use narwhal_types::{Round, TimestampMs};
-use prometheus::IntCounter;
 use std::str::FromStr;
 use sui_execution::{self, Executor};
 use sui_macros::fail_point;
@@ -1793,6 +1792,17 @@ impl AuthorityPerEpochStore {
     }
 
     #[cfg(any(test, feature = "test-utils"))]
+    fn get_highest_pending_checkpoint_height(&self) -> CheckpointCommitHeight {
+        self.tables
+            .pending_checkpoints
+            .unbounded_iter()
+            .skip_to_last()
+            .next()
+            .map(|(key, _)| key)
+            .unwrap_or_default()
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn process_consensus_transactions_for_tests<C: CheckpointServiceNotify>(
         self: &Arc<Self>,
         transactions: Vec<SequencedConsensusTransaction>,
@@ -1803,7 +1813,7 @@ impl AuthorityPerEpochStore {
             transactions,
             checkpoint_service,
             object_store,
-            0,
+            self.get_highest_pending_checkpoint_height() + 1,
             0,
         )
         .await
